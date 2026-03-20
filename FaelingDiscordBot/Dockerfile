@@ -1,28 +1,13 @@
-# Unter https://aka.ms/customizecontainer erfahren Sie, wie Sie Ihren Debugcontainer anpassen und wie Visual Studio dieses Dockerfile verwendet, um Ihre Images für ein schnelleres Debuggen zu erstellen.
-
-# Diese Stufe wird verwendet, wenn sie von VS im Schnellmodus ausgeführt wird (Standardeinstellung für Debugkonfiguration).
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS base
-USER $APP_UID
-WORKDIR /app
-
-
-# Diese Stufe wird zum Erstellen des Dienstprojekts verwendet.
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
-COPY ["FaelingDiscordBot/FaelingDiscordBot.csproj", "FaelingDiscordBot/"]
-RUN dotnet restore "./FaelingDiscordBot/FaelingDiscordBot.csproj"
+
+COPY ["FaelingDiscordBot.csproj", "./"]
+RUN dotnet restore "FaelingDiscordBot.csproj"
+
 COPY . .
-WORKDIR "/src/FaelingDiscordBot"
-RUN dotnet build "./FaelingDiscordBot.csproj" -c $BUILD_CONFIGURATION -o /app/build
+RUN dotnet publish "FaelingDiscordBot.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
-# Diese Stufe wird verwendet, um das Dienstprojekt zu veröffentlichen, das in die letzte Phase kopiert werden soll.
-FROM build AS publish
-ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "./FaelingDiscordBot.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
-
-# Diese Stufe wird in der Produktion oder bei Ausführung von VS im regulären Modus verwendet (Standard, wenn die Debugkonfiguration nicht verwendet wird).
-FROM base AS final
+FROM mcr.microsoft.com/dotnet/runtime:10.0 AS final
 WORKDIR /app
-COPY --from=publish /app/publish .
+COPY --from=build /app/publish .
 ENTRYPOINT ["dotnet", "FaelingDiscordBot.dll"]
