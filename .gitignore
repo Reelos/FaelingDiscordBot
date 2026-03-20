@@ -1,0 +1,35 @@
+# Build Output
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Rider / JetBrains
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Secrets / Local Config
+*/Properties/launchSettings.json
+.env
+.env.*
+
+# User Secrets (falls du sie nutzt)
+secrets.json
+
+# Docker (optional, falls du später lokale Overrides machst)
+docker-compose.override.yml
+
+# Publish Output
+publish/
+
+# NuGet
+*.nupkg
