@@ -11,4 +11,5 @@ public class PanelIndexEntryModel
     public string Title { get; set; } = string.Empty;
     public int Order { get; set; }
     public bool Visible { get; set; } = true;
+    public ulong? MessageId { get; set; }
 }

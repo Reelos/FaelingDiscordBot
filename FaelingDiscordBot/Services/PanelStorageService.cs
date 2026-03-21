@@ -1,6 +1,6 @@
-﻿using System.Text;
+﻿using FaelingDiscordBot.Models;
+using System.Text;
 using System.Text.Json;
-using FaelingDiscordBot.Models;
 
 namespace FaelingDiscordBot.Services;
 
@@ -15,6 +15,63 @@ public class PanelStorageService
     public PanelStorageService(string? contentRoot = null)
     {
         _contentRoot = contentRoot ?? Path.Combine(AppContext.BaseDirectory, "content");
+    }
+
+    public async Task<(bool Success, string Message)> MovePanelAsync(
+        ulong guildId,
+        ulong channelId,
+        string panelId,
+        int newOrder)
+    {
+        if (string.IsNullOrWhiteSpace(panelId))
+            return (false, "Ungültige Panel-ID.");
+
+        if (newOrder <= 0)
+            return (false, "Ungültige Ziel-Reihenfolge.");
+
+        var index = await ReadIndexAsync(guildId, channelId);
+        var normalizedId = NormalizePanelId(panelId);
+        var panel = index.Panels.FirstOrDefault(p => p.Id.Equals(normalizedId, StringComparison.OrdinalIgnoreCase));
+        if (panel is null)
+            return (false, $"Kein Panel mit der ID `{panelId}` gefunden.");
+
+        var oldOrder = panel.Order;
+        var maxOrder = index.Panels.Count == 0 ? 0 : index.Panels.Max(p => p.Order);
+
+        // clamp newOrder
+        if (newOrder > maxOrder)
+            newOrder = maxOrder == 0 ? 1 : maxOrder;
+
+        if (newOrder == oldOrder)
+            return (true, "Panel bleibt an derselben Position.");
+
+        if (newOrder < oldOrder)
+        {
+            // shift others down (increment) in range [newOrder, oldOrder-1]
+            foreach (var p in index.Panels.Where(p => p.Id != panel.Id && p.Order >= newOrder && p.Order < oldOrder))
+            {
+                p.Order++;
+            }
+        }
+        else // newOrder > oldOrder
+        {
+            // shift others up (decrement) in range [oldOrder+1, newOrder]
+            foreach (var p in index.Panels.Where(p => p.Id != panel.Id && p.Order <= newOrder && p.Order > oldOrder))
+            {
+                p.Order--;
+            }
+        }
+
+        panel.Order = newOrder;
+
+        // normalize ordering to contiguous starting at 1
+        var ordered = index.Panels.OrderBy(p => p.Order).ToList();
+        for (int i = 0; i < ordered.Count; i++)
+            ordered[i].Order = i + 1;
+
+        await WriteIndexAsync(guildId, channelId, index);
+
+        return (true, "Panel verschoben.");
     }
 
     public string GetGuildPath(ulong guildId)
@@ -101,8 +158,14 @@ public class PanelStorageService
         ulong guildId,
         ulong channelId,
         string title,
-        string? requestedId = null)
+        string? requestedId = null,
+        int? order = null)
     {
+        // enforce reasonable title length limit
+        title = (title ?? string.Empty).Trim();
+        if (title.Length > 128)
+            title = title.Substring(0, 128);
+
         var finalId = string.IsNullOrWhiteSpace(requestedId)
             ? NormalizePanelId(title)
             : NormalizePanelId(requestedId);
@@ -117,15 +180,32 @@ public class PanelStorageService
         if (index.Panels.Any(p => p.Id.Equals(finalId, StringComparison.OrdinalIgnoreCase)))
             return (false, $"Ein Panel mit der ID `{finalId}` existiert bereits.", null);
 
-        var nextOrder = index.Panels.Count == 0
-            ? 1
-            : index.Panels.Max(p => p.Order) + 1;
+        int finalOrder;
+
+        if (order.HasValue && order.Value > 0)
+        {
+            // clamp requested order to a sensible maximum (at most count+1)
+            var maxAllowed = index.Panels.Count + 1;
+            finalOrder = order.Value > maxAllowed ? maxAllowed : order.Value;
+
+            // shift existing panels with order >= finalOrder
+            foreach (var p in index.Panels.Where(p => p.Order >= finalOrder))
+            {
+                p.Order++;
+            }
+        }
+        else
+        {
+            finalOrder = index.Panels.Count == 0
+                ? 1
+                : index.Panels.Max(p => p.Order) + 1;
+        }
 
         index.Panels.Add(new PanelIndexEntryModel
         {
             Id = finalId,
             Title = title,
-            Order = nextOrder,
+            Order = finalOrder,
             Visible = true
         });
 
