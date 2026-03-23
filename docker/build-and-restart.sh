@@ -6,7 +6,7 @@ set -euo pipefail
 
 IMAGE_NAME=${1:-faeling-discord-bot}
 CONTAINER_NAME=${2:-faeling-discord-bot}
-BUILD_PATH=${3:-..}
+BUILD_PATH=${3:-../FaelingDiscordBot}
 SECRETS_FILE="$(pwd)/secrets.env"
 
 if [ ! -f "$SECRETS_FILE" ]; then
