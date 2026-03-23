@@ -24,6 +24,7 @@ public class Program
         };
 
         _client.Ready += OnReadyAsync;
+        _client.JoinedGuild += OnJoinedGuildAsync;
         _client.InteractionCreated += OnInteractionCreatedAsync;
     }
 
@@ -51,59 +52,76 @@ public class Program
             return;
 
         _commandsRegistered = true;
-
         foreach (var guild in _client.Guilds)
         {
-            try
+            await RegisterPanelCommandForGuildAsync(guild);
+        }
+    }
+
+    private async Task OnJoinedGuildAsync(SocketGuild guild)
+    {
+        try
+        {
+            await RegisterPanelCommandForGuildAsync(guild);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Fehler bei Command-Registrierung für beigetretene Guild {guild.Name}:");
+            Console.WriteLine(ex);
+        }
+    }
+
+    private async Task RegisterPanelCommandForGuildAsync(SocketGuild guild)
+    {
+        try
+        {
+            var slashCommand = new SlashCommandBuilder()
+                .WithName("panel")
+                .WithDescription("Verwaltet Panels")
+                .AddOption(new SlashCommandOptionBuilder()
+                    .WithName("action")
+                    .WithDescription("Aktion")
+                    .WithType(ApplicationCommandOptionType.String)
+                    .WithRequired(true)
+                    .AddChoice("create", "create")
+                    .AddChoice("show", "show")
+                    .AddChoice("edit", "edit")
+                    .AddChoice("move", "move")
+                    .AddChoice("list", "list")
+                    .AddChoice("hide", "hide"))
+                .AddOption(new SlashCommandOptionBuilder()
+                    .WithName("name")
+                    .WithDescription("Anzeigename des Panels")
+                    .WithType(ApplicationCommandOptionType.String)
+                    .WithRequired(false))
+                .AddOption(new SlashCommandOptionBuilder()
+                    .WithName("order")
+                    .WithDescription("Reihenfolge (1 = oben)")
+                    .WithType(ApplicationCommandOptionType.Integer)
+                    .WithRequired(false))
+                .AddOption(new SlashCommandOptionBuilder()
+                    .WithName("id")
+                    .WithDescription("Optionale technische ID des Panels")
+                    .WithType(ApplicationCommandOptionType.String)
+                    .WithRequired(false))
+                .Build();
+
+            var existingCommands = await guild.GetApplicationCommandsAsync();
+            var existingPanel = existingCommands.FirstOrDefault(x => x.Name == "panel");
+
+            if (existingPanel != null)
             {
-                var slashCommand = new SlashCommandBuilder()
-                    .WithName("panel")
-                    .WithDescription("Verwaltet Panels")
-                    .AddOption(new SlashCommandOptionBuilder()
-                        .WithName("action")
-                        .WithDescription("Aktion")
-                        .WithType(ApplicationCommandOptionType.String)
-                        .WithRequired(true)
-                        .AddChoice("create", "create")
-                        .AddChoice("show", "show")
-                        .AddChoice("edit", "edit")
-                        .AddChoice("move", "move")
-                        .AddChoice("list", "list")
-                        .AddChoice("hide", "hide"))
-                    .AddOption(new SlashCommandOptionBuilder()
-                        .WithName("name")
-                        .WithDescription("Anzeigename des Panels")
-                        .WithType(ApplicationCommandOptionType.String)
-                        .WithRequired(false))
-                    .AddOption(new SlashCommandOptionBuilder()
-                        .WithName("order")
-                        .WithDescription("Reihenfolge (1 = oben)")
-                        .WithType(ApplicationCommandOptionType.Integer)
-                        .WithRequired(false))
-                    .AddOption(new SlashCommandOptionBuilder()
-                        .WithName("id")
-                        .WithDescription("Optionale technische ID des Panels")
-                        .WithType(ApplicationCommandOptionType.String)
-                        .WithRequired(false))
-                    .Build();
-
-                var existingCommands = await guild.GetApplicationCommandsAsync();
-                var existingPanel = existingCommands.FirstOrDefault(x => x.Name == "panel");
-
-                if (existingPanel != null)
-                {
-                    await existingPanel.DeleteAsync();
-                    Console.WriteLine($"/panel gelöscht für Guild {guild.Name}");
-                }
-
-                await guild.CreateApplicationCommandAsync(slashCommand);
-                Console.WriteLine($"/panel neu registriert für Guild {guild.Name}");
+                await existingPanel.DeleteAsync();
+                Console.WriteLine($"/panel gelöscht für Guild {guild.Name}");
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Fehler bei Command-Registrierung für Guild {guild.Name}:");
-                Console.WriteLine(ex);
-            }
+
+            await guild.CreateApplicationCommandAsync(slashCommand);
+            Console.WriteLine($"/panel neu registriert für Guild {guild.Name}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Fehler bei Command-Registrierung für Guild {guild.Name}:");
+            Console.WriteLine(ex);
         }
     }
 

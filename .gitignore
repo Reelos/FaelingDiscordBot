@@ -22,6 +22,12 @@ Thumbs.db
 .env
 .env.*
 
+# Local Docker secrets (copy of docker/secrets.example.env -> docker/secrets.env)
+# Do NOT commit the real secrets file
+docker/secrets.env
+secrets.env
+*.secret
+
 # User Secrets (falls du sie nutzt)
 secrets.json
 
