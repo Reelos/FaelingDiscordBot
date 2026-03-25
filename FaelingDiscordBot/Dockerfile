@@ -10,5 +10,4 @@ RUN dotnet publish "FaelingDiscordBot.csproj" -c Release -o /app/publish /p:UseA
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS final
 WORKDIR /app
 COPY --from=build /app/publish .
-VOLUME ["/app/content"]
 ENTRYPOINT ["dotnet", "FaelingDiscordBot.dll"]
