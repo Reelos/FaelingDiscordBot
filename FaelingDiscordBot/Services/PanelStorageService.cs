@@ -201,6 +201,9 @@ public class PanelStorageService
                 : index.Panels.Max(p => p.Order) + 1;
         }
 
+        // Add entry to index and persist. If anything fails while writing the panel
+        // content afterwards we try to rollback the index to avoid a state where
+        // a panel file exists but the index does not reference it.
         index.Panels.Add(new PanelIndexEntryModel
         {
             Id = finalId,
@@ -209,14 +212,51 @@ public class PanelStorageService
             Visible = true
         });
 
-        await WriteIndexAsync(guildId, channelId, index);
+        try
+        {
+            await WriteIndexAsync(guildId, channelId, index);
+        }
+        catch (Exception ex)
+        {
+            return (false, $"Fehler beim Schreiben des Index: {ex.Message}", null);
+        }
 
         var content = new PanelContentModel
         {
             Body = new List<string> { "Neuer Eintrag" }
         };
 
-        await WritePanelAsync(guildId, channelId, finalId, content);
+        try
+        {
+            await WritePanelAsync(guildId, channelId, finalId, content);
+        }
+        catch (Exception ex)
+        {
+            // Attempt to rollback the index entry we just added
+            try
+            {
+                index.Panels.RemoveAll(p => p.Id.Equals(finalId, StringComparison.OrdinalIgnoreCase));
+                await WriteIndexAsync(guildId, channelId, index);
+            }
+            catch
+            {
+                // If rollback fails, there's not much we can do here. Swallow to return original error.
+            }
+
+            // Remove any partially written panel file
+            try
+            {
+                var panelPath = GetPanelPath(guildId, channelId, finalId);
+                if (File.Exists(panelPath))
+                    File.Delete(panelPath);
+            }
+            catch
+            {
+                // ignore
+            }
+
+            return (false, $"Fehler beim Schreiben der Panel-Datei: {ex.Message}", null);
+        }
 
         return (true, $"Panel `{title}` wurde mit der ID `{finalId}` erstellt.", finalId);
     }

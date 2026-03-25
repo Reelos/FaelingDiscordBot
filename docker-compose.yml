@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  faelingbot:
+    build:
+      context: ./FaelingDiscordBot
+      dockerfile: Dockerfile
+    image: faelingdiscordbot:latest
+    restart: unless-stopped
+    env_file:
+      - docker/secrets.env
+    volumes:
+      - faeling_content:/app/content
+
+volumes:
+  faeling_content:
+    name: faeling_content

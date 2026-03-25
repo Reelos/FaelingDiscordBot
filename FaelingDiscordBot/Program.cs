@@ -99,11 +99,6 @@ public class Program
                     .WithDescription("Reihenfolge (1 = oben)")
                     .WithType(ApplicationCommandOptionType.Integer)
                     .WithRequired(false))
-                .AddOption(new SlashCommandOptionBuilder()
-                    .WithName("id")
-                    .WithDescription("Optionale technische ID des Panels")
-                    .WithType(ApplicationCommandOptionType.String)
-                    .WithRequired(false))
                 .Build();
 
             var existingCommands = await guild.GetApplicationCommandsAsync();

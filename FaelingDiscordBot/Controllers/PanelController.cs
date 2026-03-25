@@ -1,12 +1,9 @@
-using System.Linq;
-using System.Collections.Generic;
-using System.Threading.Tasks;
-using System.Security.Cryptography;
-using System.Text;
 using Discord;
 using Discord.WebSocket;
 using FaelingDiscordBot.Models;
 using FaelingDiscordBot.Services;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace FaelingDiscordBot.Controllers;
 
@@ -18,6 +15,238 @@ public static class PanelController
         var bytes = Encoding.UTF8.GetBytes(panelId);
         var hash = sha.ComputeHash(bytes);
         return BitConverter.ToString(hash, 0, 4).Replace("-", "").ToLowerInvariant();
+    }
+
+    // --- Extracted handlers for slash actions ---
+    private static async Task HandleCreateAsync(SocketSlashCommand cmd, PanelStorageService storage, DiscordSocketClient client, ulong guildId, ulong channelId, string? name, string? requestedId, int? order)
+    {
+        var modalId = $"panel-modal:create:{guildId}:{channelId}";
+        var initial = string.Empty;
+
+        var index = await storage.ReadIndexAsync(guildId, channelId);
+        var suggestedOrder = index.Panels.Count == 0 ? 1 : index.Panels.Max(p => p.Order) + 1;
+        var orderValue = order?.ToString() ?? suggestedOrder.ToString();
+
+        var modal = new ModalBuilder()
+            .WithCustomId(modalId)
+            .WithTitle("Create Panel")
+            .AddTextInput("title", "Titel", TextInputStyle.Short, required: true, value: string.Empty)
+            .AddTextInput("order", "Order (1 = oben)", TextInputStyle.Short, required: false, value: orderValue)
+            .AddTextInput("id", "Optionale ID", TextInputStyle.Short, required: false, value: string.Empty)
+            .AddTextInput("body", "Inhalt (Zeilen)", TextInputStyle.Paragraph, required: false, value: initial, maxLength: 4000)
+            .Build();
+
+        try
+        {
+            await cmd.RespondWithModalAsync(modal);
+        }
+        catch
+        {
+            var fallback = new ModalBuilder()
+                .WithCustomId(modalId)
+                .WithTitle("Create Panel")
+                .AddTextInput("title", "Titel", TextInputStyle.Short, required: true, value: string.Empty)
+                .AddTextInput("order", "Order (1 = oben)", TextInputStyle.Short, required: false, value: orderValue)
+                .AddTextInput("id", "Optionale ID", TextInputStyle.Short, required: false, value: string.Empty)
+                .AddTextInput("body", "Inhalt (Zeilen)", TextInputStyle.Paragraph, required: false, value: initial)
+                .Build();
+
+            try { await cmd.RespondWithModalAsync(fallback); }
+            catch { await cmd.RespondAsync("Fehler beim Öffnen des Create-Modals.", ephemeral: true); }
+        }
+    }
+
+    private static async Task HandleEditAsync(SocketSlashCommand cmd, PanelStorageService storage, DiscordSocketClient client, ulong guildId, ulong channelId, string? requestedId, string? name, int? order)
+    {
+        if (string.IsNullOrWhiteSpace(requestedId))
+        {
+            await cmd.RespondAsync("Bitte gib die Panel-ID an (Option `id`).", ephemeral: true);
+            return;
+        }
+
+        var index = await storage.ReadIndexAsync(guildId, channelId);
+        var normalized = storage.NormalizePanelId(requestedId);
+        var panel = index.Panels.FirstOrDefault(p => p.Id.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+        if (panel is null)
+        {
+            await cmd.RespondAsync($"Kein Panel mit der ID `{requestedId}` gefunden.", ephemeral: true);
+            return;
+        }
+
+        // Allow updating title and order via slash edit
+        var newTitle = name;
+        var newOrder = order;
+
+        if (!string.IsNullOrWhiteSpace(newTitle) || newOrder.HasValue)
+        {
+            if (!string.IsNullOrWhiteSpace(newTitle))
+            {
+                var nt = newTitle.Trim();
+                if (nt.Length > 128) nt = nt.Substring(0, 128);
+                panel.Title = nt;
+            }
+
+            var moved = false;
+            if (newOrder.HasValue && newOrder.Value > 0 && newOrder.Value != panel.Order)
+            {
+                var moveResult = await storage.MovePanelAsync(guildId, channelId, panel.Id, newOrder.Value);
+                if (!moveResult.Success)
+                {
+                    await cmd.RespondAsync(moveResult.Message, ephemeral: true);
+                    return;
+                }
+
+                moved = true;
+            }
+
+            await storage.WriteIndexAsync(guildId, channelId, index);
+
+            if (moved)
+                await RenderAllPanelMessagesAsync(storage, client, guildId, channelId);
+        }
+
+        var contentModel = await storage.ReadPanelAsync(guildId, channelId, panel.Id);
+        var initial = string.Join("\n", contentModel.Body);
+        var modalPanelToken = GetPanelToken(panel.Id);
+        var modalId = $"panel-modal:edit:{guildId}:{channelId}:{modalPanelToken}";
+
+        var modalTitleBtn = $"Edit Panel {panel.Title}";
+        if (modalTitleBtn.Length > 45)
+            modalTitleBtn = modalTitleBtn.Substring(0, 42) + "...";
+
+        var modal = new ModalBuilder()
+            .WithCustomId(modalId)
+            .WithTitle(modalTitleBtn)
+            .AddTextInput("title", "Titel", TextInputStyle.Short, required: true, value: panel.Title)
+            .AddTextInput("order", "Order (1 = oben)", TextInputStyle.Short, required: false, value: panel.Order.ToString())
+            .AddTextInput("body", "Inhalt (Zeilen)", TextInputStyle.Paragraph, required: false, value: initial, maxLength: 4000)
+            .Build();
+
+        try { await cmd.RespondWithModalAsync(modal); }
+        catch
+        {
+            try
+            {
+                var fallback = new ModalBuilder()
+                    .WithCustomId(modalId)
+                    .WithTitle("Edit Panel")
+                    .AddTextInput("title", "Titel", TextInputStyle.Short, required: true, value: panel.Title)
+                    .AddTextInput("order", "Order (1 = oben)", TextInputStyle.Short, required: false, value: panel.Order.ToString())
+                    .AddTextInput("body", "Inhalt (Zeilen)", TextInputStyle.Paragraph, required: false, value: initial)
+                    .Build();
+
+                await cmd.RespondWithModalAsync(fallback);
+            }
+            catch
+            {
+                await cmd.RespondAsync("Fehler beim Öffnen des Edit-Modals.", ephemeral: true);
+            }
+        }
+    }
+
+    private static async Task HandleShowAsync(SocketSlashCommand cmd, PanelStorageService storage, DiscordSocketClient client, ulong guildId, ulong channelId)
+    {
+        var index = await storage.ReadIndexAsync(guildId, channelId);
+
+        var channel = cmd.Channel as IMessageChannel;
+        if (channel is null)
+        {
+            await cmd.RespondAsync("Channel nicht verfügbar.", ephemeral: true);
+            return;
+        }
+
+        foreach (var panel in index.Panels.Where(p => p.Visible).OrderBy(p => p.Order))
+        {
+            var (content, components) = await BuildSinglePanelMessageAsync(storage, guildId, channelId, panel, isOpen: false);
+
+            if (panel.MessageId.HasValue)
+            {
+                var existing = await channel.GetMessageAsync(panel.MessageId.Value) as IUserMessage;
+                if (existing != null)
+                {
+                    await existing.ModifyAsync(props => { props.Content = content; props.Components = components; });
+                    continue;
+                }
+            }
+
+            var sent = await channel.SendMessageAsync(content, components: components);
+            panel.MessageId = sent.Id;
+        }
+
+        await storage.WriteIndexAsync(guildId, channelId, index);
+        await cmd.RespondAsync("Panel-Nachrichten erstellt/aktualisiert.", ephemeral: true);
+    }
+
+    private static async Task HandleHideAsync(SocketSlashCommand cmd, PanelStorageService storage, DiscordSocketClient client, ulong guildId, ulong channelId, string? requestedId)
+    {
+        if (string.IsNullOrWhiteSpace(requestedId))
+        {
+            await cmd.RespondAsync("Bitte gib die Panel-ID an (Option `id`).", ephemeral: true);
+            return;
+        }
+
+        var index = await storage.ReadIndexAsync(guildId, channelId);
+        var normalized = storage.NormalizePanelId(requestedId);
+        var panel = index.Panels.FirstOrDefault(p => p.Id.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+        if (panel is null)
+        {
+            await cmd.RespondAsync($"Kein Panel mit der ID `{requestedId}` gefunden.", ephemeral: true);
+            return;
+        }
+
+        var channel = cmd.Channel as IMessageChannel;
+        if (channel is null)
+        {
+            await cmd.RespondAsync("Channel nicht verfügbar.", ephemeral: true);
+            return;
+        }
+
+        if (panel.MessageId.HasValue)
+        {
+            var existing = await channel.GetMessageAsync(panel.MessageId.Value) as IUserMessage;
+            if (existing != null)
+                await existing.DeleteAsync();
+
+            panel.MessageId = null;
+            await storage.WriteIndexAsync(guildId, channelId, index);
+        }
+
+        await cmd.RespondAsync($"Panel `{panel.Id}`: Nachricht gelöscht und MessageId entfernt.", ephemeral: true);
+    }
+
+    private static async Task HandleMoveAsync(SocketSlashCommand cmd, PanelStorageService storage, DiscordSocketClient client, ulong guildId, ulong channelId, string? requestedId, int? order)
+    {
+        if (string.IsNullOrWhiteSpace(requestedId) || !order.HasValue)
+        {
+            await cmd.RespondAsync("Bitte gib Panel-ID (Option `id`) und Ziel-Order (Option `order`) an.", ephemeral: true);
+            return;
+        }
+
+        var moveResult = await storage.MovePanelAsync(guildId, channelId, requestedId, order.Value);
+        if (!moveResult.Success)
+        {
+            await cmd.RespondAsync(moveResult.Message, ephemeral: true);
+            return;
+        }
+
+        await RenderAllPanelMessagesAsync(storage, client, guildId, channelId);
+        await cmd.RespondAsync(moveResult.Message, ephemeral: true);
+    }
+
+    private static async Task HandleListAsync(SocketSlashCommand cmd, PanelStorageService storage, ulong guildId, ulong channelId)
+    {
+        var index = await storage.ReadIndexAsync(guildId, channelId);
+
+        if (index.Panels.Count == 0)
+        {
+            await cmd.RespondAsync("Keine Panels vorhanden.", ephemeral: true);
+            return;
+        }
+
+        var lines = new List<string> { "**Panel-Übersicht**", string.Empty };
+        lines.AddRange(index.Panels.OrderBy(p => p.Order).Select(p => $"- `{p.Id}`"));
+
+        await cmd.RespondAsync(string.Join("\n", lines), ephemeral: true);
     }
 
     private static PanelIndexEntryModel? ResolvePanelByToken(PanelIndexModel index, string token)
@@ -42,246 +271,27 @@ public static class PanelController
         if (orderOpt != null && int.TryParse(orderOpt.ToString(), out var o))
             order = o;
 
-        if (string.Equals(action, "create", StringComparison.OrdinalIgnoreCase))
+        // Dispatch action handling to dedicated methods (creates modals where appropriate)
+        switch (action?.ToLowerInvariant())
         {
-
-            // Open modal to collect title, optional id and order, and body
-            var modalId = $"panel-modal:create:{guildId}:{channelId}";
-            var initial = ""; // leave empty for new panel
-
-            var modal = new ModalBuilder()
-                .WithCustomId(modalId)
-                .WithTitle("Create Panel")
-                .AddTextInput("title", "Titel", TextInputStyle.Short, required: true, value: name)
-                .AddTextInput("order", "Order (1 = oben)", TextInputStyle.Short, required: false, value: order?.ToString())
-                .AddTextInput("id", "Optionale ID", TextInputStyle.Short, required: false, value: requestedId)
-                .AddTextInput("body", "Inhalt (Zeilen)", TextInputStyle.Paragraph, required: false, value: initial, maxLength: 4000)
-                .Build();
-
-            try
-            {
-                await cmd.RespondWithModalAsync(modal);
-            }
-            catch
-            {
-                var fallbackTitle = "Create Panel";
-                var fallback = new ModalBuilder()
-                    .WithCustomId(modalId)
-                    .WithTitle(fallbackTitle)
-                    .AddTextInput("title", "Titel", TextInputStyle.Short, required: true, value: name)
-                    .AddTextInput("order", "Order (1 = oben)", TextInputStyle.Short, required: false, value: order?.ToString())
-                    .AddTextInput("body", "Inhalt (Zeilen)", TextInputStyle.Paragraph, required: false, value: initial)
-                    .Build();
-
-                try
-                {
-                    await cmd.RespondWithModalAsync(fallback);
-                }
-                catch
-                {
-                    await cmd.RespondAsync("Fehler beim Öffnen des Edit-Modals.", ephemeral: true);
-                }
-            }
-            return;
-        }
-
-        if (string.Equals(action, "edit", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrWhiteSpace(requestedId))
-            {
-                await cmd.RespondAsync("Bitte gib die Panel-ID an (Option `id`).", ephemeral: true);
+            case "create":
+                await HandleCreateAsync(cmd, storage, client, guildId, channelId, name, requestedId, order);
                 return;
-            }
-
-            var index = await storage.ReadIndexAsync(guildId, channelId);
-            var normalized = storage.NormalizePanelId(requestedId);
-            var panel = index.Panels.FirstOrDefault(p => p.Id.Equals(normalized, StringComparison.OrdinalIgnoreCase));
-            if (panel is null)
-            {
-                await cmd.RespondAsync($"Kein Panel mit der ID `{requestedId}` gefunden.", ephemeral: true);
+            case "edit":
+                await HandleEditAsync(cmd, storage, client, guildId, channelId, requestedId, name, order);
                 return;
-            }
-
-            // Allow updating title and order via slash edit
-            var newTitle = name;
-            var orderOpt2 = cmd.Data.Options.FirstOrDefault(x => x.Name == "order")?.Value;
-            int? newOrder = null;
-            if (orderOpt2 != null && int.TryParse(orderOpt2.ToString(), out var no))
-                newOrder = no;
-
-            if (!string.IsNullOrWhiteSpace(newTitle) || newOrder.HasValue)
-            {
-                if (!string.IsNullOrWhiteSpace(newTitle))
-                {
-                    var nt = newTitle.Trim();
-                    if (nt.Length > 128) nt = nt.Substring(0, 128);
-                    panel.Title = nt;
-                }
-
-                var moved = false;
-                if (newOrder.HasValue && newOrder.Value > 0 && newOrder.Value != panel.Order)
-                {
-                    var moveResult = await storage.MovePanelAsync(guildId, channelId, panel.Id, newOrder.Value);
-                    if (!moveResult.Success)
-                    {
-                        await cmd.RespondAsync(moveResult.Message, ephemeral: true);
-                        return;
-                    }
-
-                    moved = true;
-                }
-
-                await storage.WriteIndexAsync(guildId, channelId, index);
-
-                // If the order changed, re-render all panel messages so their ordering in-channel is correct
-                if (moved)
-                {
-                    await RenderAllPanelMessagesAsync(storage, client, guildId, channelId);
-                }
-            }
-
-            var contentModel = await storage.ReadPanelAsync(guildId, channelId, panel.Id);
-            var initial = string.Join("\n", contentModel.Body);
-            var modalPanelToken = GetPanelToken(panel.Id);
-            var modalId = $"panel-modal:edit:{guildId}:{channelId}:{modalPanelToken}";
-
-            var modalTitleBtn = $"Edit Panel {panel.Title}";
-            if (modalTitleBtn.Length > 45)
-                modalTitleBtn = modalTitleBtn.Substring(0, 42) + "...";
-
-            var modal = new ModalBuilder()
-                .WithCustomId(modalId)
-                .WithTitle(modalTitleBtn)
-                .AddTextInput("title", "Titel", TextInputStyle.Short, required: true, value: panel.Title)
-                .AddTextInput("order", "Order (1 = oben)", TextInputStyle.Short, required: false, value: panel.Order.ToString())
-                .AddTextInput("body", "Inhalt (Zeilen)", TextInputStyle.Paragraph, required: false, value: initial, maxLength: 4000)
-                .Build();
-
-            await cmd.RespondWithModalAsync(modal);
-            return;
-        }
-
-        if (string.Equals(action, "show", StringComparison.OrdinalIgnoreCase))
-        {
-            var index = await storage.ReadIndexAsync(guildId, channelId);
-
-            var channel = cmd.Channel as IMessageChannel;
-            if (channel is null)
-            {
-                await cmd.RespondAsync("Channel nicht verfügbar.", ephemeral: true);
+            case "show":
+                await HandleShowAsync(cmd, storage, client, guildId, channelId);
                 return;
-            }
-
-            // For each visible panel create or update its own message and persist MessageId
-            foreach (var panel in index.Panels.Where(p => p.Visible).OrderBy(p => p.Order))
-            {
-                var (content, components) = await BuildSinglePanelMessageAsync(storage, guildId, channelId, panel, isOpen: false);
-
-                if (panel.MessageId.HasValue)
-                {
-                    var existing = await channel.GetMessageAsync(panel.MessageId.Value) as IUserMessage;
-                    if (existing != null)
-                    {
-                        await existing.ModifyAsync(props =>
-                        {
-                            props.Content = content;
-                            props.Components = components;
-                        });
-                        continue;
-                    }
-                }
-
-                var sent = await channel.SendMessageAsync(content, components: components);
-                panel.MessageId = sent.Id;
-            }
-
-            await storage.WriteIndexAsync(guildId, channelId, index);
-            await cmd.RespondAsync("Panel-Nachrichten erstellt/aktualisiert.", ephemeral: true);
-            return;
-        }
-
-        if (string.Equals(action, "hide", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrWhiteSpace(requestedId))
-            {
-                await cmd.RespondAsync("Bitte gib die Panel-ID an (Option `id`).", ephemeral: true);
+            case "hide":
+                await HandleHideAsync(cmd, storage, client, guildId, channelId, requestedId);
                 return;
-            }
-
-            var index = await storage.ReadIndexAsync(guildId, channelId);
-            var normalized = storage.NormalizePanelId(requestedId);
-            var panel = index.Panels.FirstOrDefault(p => p.Id.Equals(normalized, StringComparison.OrdinalIgnoreCase));
-            if (panel is null)
-            {
-                await cmd.RespondAsync($"Kein Panel mit der ID `{requestedId}` gefunden.", ephemeral: true);
+            case "move":
+                await HandleMoveAsync(cmd, storage, client, guildId, channelId, requestedId, order);
                 return;
-            }
-
-            var channel = cmd.Channel as IMessageChannel;
-            if (channel is null)
-            {
-                await cmd.RespondAsync("Channel nicht verfügbar.", ephemeral: true);
+            case "list":
+                await HandleListAsync(cmd, storage, guildId, channelId);
                 return;
-            }
-
-            if (panel.MessageId.HasValue)
-            {
-                var existing = await channel.GetMessageAsync(panel.MessageId.Value) as IUserMessage;
-                if (existing != null)
-                    await existing.DeleteAsync();
-
-                panel.MessageId = null;
-                await storage.WriteIndexAsync(guildId, channelId, index);
-            }
-
-            await cmd.RespondAsync($"Panel `{panel.Id}`: Nachricht gelöscht und MessageId entfernt.", ephemeral: true);
-            return;
-        }
-
-        if (string.Equals(action, "move", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrWhiteSpace(requestedId) || !order.HasValue)
-            {
-                await cmd.RespondAsync("Bitte gib Panel-ID (Option `id`) und Ziel-Order (Option `order`) an.", ephemeral: true);
-                return;
-            }
-
-            var moveResult = await storage.MovePanelAsync(guildId, channelId, requestedId, order.Value);
-            if (!moveResult.Success)
-            {
-                await cmd.RespondAsync(moveResult.Message, ephemeral: true);
-                return;
-            }
-
-            // re-render all panel messages so title/buttons reflect new order
-            await RenderAllPanelMessagesAsync(storage, client, guildId, channelId);
-
-            await cmd.RespondAsync(moveResult.Message, ephemeral: true);
-            return;
-        }
-
-        if (string.Equals(action, "list", StringComparison.OrdinalIgnoreCase))
-        {
-            var index = await storage.ReadIndexAsync(guildId, channelId);
-
-            if (index.Panels.Count == 0)
-            {
-                await cmd.RespondAsync("Keine Panels vorhanden.", ephemeral: true);
-                return;
-            }
-
-            var lines = new List<string>
-            {
-                "**Panel-Übersicht**",
-                ""
-            };
-
-            lines.AddRange(index.Panels
-                .OrderBy(p => p.Order)
-                .Select(p => $"- `{p.Id}`"));
-
-            await cmd.RespondAsync(string.Join("\n", lines), ephemeral: true);
-            return;
         }
     }
 
@@ -304,7 +314,7 @@ public static class PanelController
             return;
         }
 
-            var panelTokenStr = parts[3];
+        var panelTokenStr = parts[3];
         var action = parts[4];
 
         var index = await storage.ReadIndexAsync(guildId, channelId);
